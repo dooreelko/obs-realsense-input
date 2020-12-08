@@ -1,0 +1,63 @@
+diff --git a/CI/full-build-macos.sh b/CI/full-build-macos.sh
+index f00092dd9..798616eec 100755
+--- a/CI/full-build-macos.sh
++++ b/CI/full-build-macos.sh
+@@ -131,12 +131,14 @@ install_homebrew_deps() {
+         exit 1
+     fi
+ 
+-    if [ -d /usr/local/opt/openssl@1.0.2t ]; then
++    PFX=$(brew --prefix)
++
++    if [ -d "$PFX"/opt/openssl@1.0.2t ]; then
+         brew uninstall openssl@1.0.2t
+         brew untap local/openssl
+     fi
+ 
+-    if [ -d /usr/local/opt/python@2.7.17 ]; then
++    if [ -d "$PFX"/opt/python@2.7.17 ]; then
+         brew uninstall python@2.7.17
+         brew untap local/python2
+     fi
+@@ -251,7 +253,10 @@ configure_obs_build() {
+     ensure_dir "${CHECKOUT_DIR}/${BUILD_DIR}"
+ 
+     CUR_DATE=$(date +"%Y-%m-%d@%H%M%S")
+-    NIGHTLY_DIR="${CHECKOUT_DIR}/nightly-${CUR_DATE}"
++    NIGHTLY_DIR="${CHECKOUT_DIR}/nightly" #-${CUR_DATE}"
++
++    rm -rf "$NIGHTLY_DIR"
++
+     PACKAGE_NAME=$(find . -name "*.dmg")
+ 
+     if [ -d ./OBS.app ]; then
+@@ -330,7 +335,7 @@ bundle_dylibs() {
+         -x ./OBS.app/Contents/PlugIns/obs-x264.so \
+         -x ./OBS.app/Contents/PlugIns/text-freetype2.so \
+         -x ./OBS.app/Contents/PlugIns/obs-libfdk.so \
+-        -x ./OBS.app/Contents/PlugIns/obs-outputs.so
++        -x ./OBS.app/Contents/PlugIns/obs-outputs.so 
+     step "Move libobs-opengl to final destination"
+ 
+     if [ -f "./libobs-opengl/libobs-opengl.so" ]; then
+@@ -347,6 +352,8 @@ bundle_dylibs() {
+     chmod 644 ./OBS.app/Contents/Frameworks/QtNetwork.framework/Versions/5/Resources/Info.plist
+     install_name_tool -id @executable_path/../Frameworks/QtNetwork.framework/Versions/5/QtNetwork ./OBS.app/Contents/Frameworks/QtNetwork.framework/Versions/5/QtNetwork
+     install_name_tool -change /tmp/obsdeps/lib/QtCore.framework/Versions/5/QtCore @executable_path/../Frameworks/QtCore.framework/Versions/5/QtCore ./OBS.app/Contents/Frameworks/QtNetwork.framework/Versions/5/QtNetwork
++
++    cp "$(brew --prefix)/Cellar/librealsense/2.40.0/lib/librealsense2.2.40.0.dylib" ./OBS.app/Contents/Frameworks/
+ }
+ 
+ install_frameworks() {
+diff --git a/plugins/CMakeLists.txt b/plugins/CMakeLists.txt
+index 900bd8f31..bb1b8af39 100644
+--- a/plugins/CMakeLists.txt
++++ b/plugins/CMakeLists.txt
+@@ -31,6 +31,7 @@ elseif(APPLE)
+ 	add_subdirectory(mac-vth264)
+ 	add_subdirectory(mac-syphon)
+ 	add_subdirectory(mac-virtualcam)
++	add_subdirectory(mac-input-realsense)
+ 	add_subdirectory(decklink/mac)
+ 	add_subdirectory(vlc-video)
+ 	add_subdirectory(linux-jack)
