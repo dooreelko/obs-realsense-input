@@ -15,3 +15,4 @@ my crude changes to `CI/full-build-macos.sh` are in `ci.diff`
 ## TODO
 - publish data from other sensors and thus enable filters using them (i don't think input source should be doing stuff like virtual green screen etc)
 - sensor controls in settings
+- not-as-lazy collection of supported resolutions/framerates
