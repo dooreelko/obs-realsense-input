@@ -14,8 +14,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
-
-#include "render.h"
+#include <fstream>
 
 #define PLUGIN_NAME "mac-input-realsense"
 
@@ -78,6 +77,12 @@ class CamSource {
 	std::vector<uint8_t> result_frame_data;
 	std::vector<uint16_t> depth_data;
 
+	rs2_intrinsics color_intrinsics;
+	rs2_intrinsics depth_intrinsics;
+	rs2_extrinsics depth_extrinsics;
+	rs2_extrinsics color_extrinsics;
+	rs2::points points;
+
 	CamSource() { gatherHardware(); }
 
 	void run()
@@ -90,27 +95,51 @@ class CamSource {
 			config.enable_stream(RS2_STREAM_DEPTH, STREAM_INDEX, width, height, RS2_FORMAT_Z16, fps);
 
 			// Start streaming with default recommended configuration
-			pipe.start(config);
+			rs2::pipeline_profile pipe_profile = pipe.start(config);
+			auto color_profile = pipe_profile.get_stream(RS2_STREAM_COLOR, STREAM_INDEX).as<rs2::video_stream_profile>();
+			auto depth_profile = pipe_profile.get_stream(RS2_STREAM_DEPTH, STREAM_INDEX).as<rs2::video_stream_profile>();
+
+			color_intrinsics = color_profile.get_intrinsics();
+			depth_intrinsics = depth_profile.get_intrinsics();
+			depth_extrinsics = depth_profile.get_extrinsics_to(color_profile);
+			color_extrinsics = color_profile.get_extrinsics_to(depth_profile);
+
+			// auto sensor = pipe_profile.get_device().first<rs2::depth_sensor>();
+			// if (sensor && sensor.is<rs2::depth_stereo_sensor>()) {
+			// 	sensor.set_option(RS2_OPTION_VISUAL_PRESET, RS2_RS400_VISUAL_PRESET_HIGH_ACCURACY);
+			// 	info("STEREO");
+			// }
 
 			int fstride = 0;
 			int fwidth = 0;
 			int fheight = 0;
 
 			rs2::pointcloud pc;
-			rs2::points points;
 
-			// rs2::align align_to_depth(RS2_STREAM_DEPTH);
-			// rs2::align align_to_color(RS2_STREAM_COLOR);
+			rs2::align align_to_depth(RS2_STREAM_DEPTH);
+			rs2::align align_to_color(RS2_STREAM_COLOR);
+			rs2::decimation_filter dec;
+			dec.set_option(RS2_OPTION_FILTER_MAGNITUDE, 2);
+			rs2::disparity_transform depth2disparity;
+			rs2::disparity_transform disparity2depth(false);
+			rs2::spatial_filter spat;
+			spat.set_option(RS2_OPTION_HOLES_FILL, 5); // 5 = fill all the zero pixels
 
-			rs2::hole_filling_filter deholer;
+			// rs2::hole_filling_filter deholer;
+			// rs2::threshold_filter threshold(0, cutoff/100.0f);
 
 			rs2::rates_printer printer;
 
-			glfw_state app_state;
-
 			while (!stopThread) {
 				auto frameset = pipe.wait_for_frames();
-				frameset.apply_filter(printer);
+				frameset = frameset.apply_filter(printer);
+				frameset = frameset.apply_filter(align_to_depth);
+				// frameset = frameset.apply_filter(dec);
+				frameset = frameset.apply_filter(depth2disparity);
+				frameset = frameset.apply_filter(spat);
+				frameset = frameset.apply_filter(disparity2depth);
+				// frameset = frameset.apply_filter(deholer);
+				// frameset = frameset.apply_filter(threshold);
 
 				for (auto &&frame : frameset) {
 
@@ -122,11 +151,12 @@ class CamSource {
 
 					if (stype == RS2_STREAM_COLOR) {
 						info("got color");
-						rs2::video_frame color = deholer.process(frame.as<rs2::video_frame>());
+						// color = deholer.process(frame.as<rs2::video_frame>());
+						auto color = frame.as<rs2::video_frame>();
 
 						// frameset.apply_filter(deholer);
 
-						// pc.map_to(color);
+						pc.map_to(color);
 
 						fstride = color.get_stride_in_bytes();
 						fwidth = color.get_width();
@@ -138,6 +168,13 @@ class CamSource {
 						}
 
 						memcpy(frame_data.data(), color.get_data(), color.get_data_size());
+
+						if (result_frame_data.size() != frame_data.size()) {
+							result_frame_data.resize(frame_data.size());
+							result_frame_data.assign(result_frame_data.size(), 0);
+						}
+						memcpy(result_frame_data.data(), color.get_data(), color.get_data_size());
+
 						// app_state.tex.upload(color);
 					} else if (stype == RS2_STREAM_DEPTH) {
 						info("got depth");
@@ -152,27 +189,14 @@ class CamSource {
 
 							points = pc.calculate(depth);
 
-							// info("points %d %d", points.get_width(), points.get_height());
-
 							memcpy(depth_data.data(), depth.get_data(), depth.get_data_size());
-
-							if (frame_data.size() != 0) {
-								// render_to_mem(fwidth, fheight, app_state, points, frame_data);
-							} else {
-								info("no color frame");
-							}
 						}
 					}
-
-					// info("got frames %d %d", !color, !depth);
-					// }
 				}
 
-				info("--");
+				info("-- %d", frame_data.size());
 
-				translate_points(fwidth, fheight, points, frame_data, depth_data, result_frame_data, cutoff);
-
-				// do_cutoff(fwidth, frame_data, depth_data);
+				do_cutoff(result_frame_data, depth_data);
 
 				if (result_frame_data.size() != 0) {
 					obs_source_frame obsframe = {};
@@ -196,126 +220,22 @@ class CamSource {
 		processing = false;
 	}
 
-	static void translate_points(int fwidth, int fheight, rs2::points &points, std::vector<uint8_t> &color, std::vector<uint16_t> &depth_data, std::vector<uint8_t> &dest, int cutoff)
+	void do_cutoff(std::vector<uint8_t> &frame_data, std::vector<uint16_t> &depth_data)
 	{
-		if (color.size() == 0 && depth_data.size() == 0) {
-			return;
-		}
-
-		dest.resize(color.size());
-		dest.assign(dest.size(), 0);
-
-		auto vertices = points.get_vertices();
-		auto tex_coords = points.get_texture_coordinates();
-
-		float minx, maxx, miny, maxy, minz, maxz = 0;
-		for (int i = 0; i < points.size(); i++) {
-			if (vertices[i].x < minx) {
-				minx = vertices[i].x;
-			}
-			if (vertices[i].x > maxx) {
-				maxx = vertices[i].x;
-			}
-			if (vertices[i].y < miny) {
-				miny = vertices[i].y;
-			}
-			if (vertices[i].y > maxy) {
-				maxy = vertices[i].y;
-			}
-			if (vertices[i].z && vertices[i].z < minz) {
-				minz = vertices[i].z;
-			}
-			if (vertices[i].z && vertices[i].z > maxz) {
-				maxz = vertices[i].z;
-			}
-		}
-
-		info("m %f %f %f %f %f %f", minx, maxx, miny, maxy, minz, maxz);
-
-		float depths[fwidth][fheight];
-
-		for (int i = 0; i < points.size(); i++) {
-
-			if (vertices[i].z) {
-				float x = (vertices[i].x - minx) / (maxx - minx) * fwidth;
-				float y = (vertices[i].y - miny) / (maxy - miny) * fheight;
-				float z = (vertices[i].z - minz) / (maxz - minz) * 65535;
-
-				if (x >= fwidth || y >= fheight || x < 0 || y < 0) {
-					continue;
-				}
-
-				// info("v %f %f %f %f %f %f", vertices[i].x, vertices[i].y, vertices[i].z, x, y, z);
-				depths[int(x)][int(y)] = vertices[i].z;
-
-				if (z < cutoff) {
-					continue;
-				}
-
-				size_t newi = y * fwidth + x;
-
-				if (newi > dest.size()) {
-					info("woot %d", newi);
-					continue;
-				}
-
-				// dest[newi * 4 + 0] = color[newi * 4 + 0];
-				// dest[newi * 4 + 1] = color[newi * 4 + 1];
-				// dest[newi * 4 + 2] = color[newi * 4 + 2];
-				// dest[newi * 4 + 3] = color[newi * 4 + 3];
-
-				auto zcolor = (vertices[i].z - minz) / (maxz - minz) * 256;
-				// auto zcolor = int((float(depth_data[newi]) / 65535) * 256);
-				// info("%f", zcolor);
-
-				dest[newi * 4 + 0] = zcolor;
-				dest[newi * 4 + 1] = zcolor;
-				dest[newi * 4 + 2] = zcolor;
-				dest[newi * 4 + 3] = 255;
-			}
-		}
-
-		info("fw");
-
-		// FILE *filePtr;
-
-		// filePtr = fopen("floatArray", "w");
-
-		// for (int x = 0; x < fwidth; x++) {
-		// 	for (int y = 0; y < fheight; y++) {
-		// 		fprintf(filePtr, "%.3g ", depths[x][y]);
-		// 	}
-		// 	fprintf(filePtr, "\n");
-		// }
-
-		// fclose(filePtr);
-	}
-
-	void do_cutoff(int fwidth, std::vector<uint8_t> &frame_data, std::vector<uint16_t> &depth_data)
-	{
-		// int xoffset = 50;
-
 		if (frame_data.size() != 0 && depth_data.size() != 0) {
-			// auto frames = align_to_depth.process(frameset);
-			// auto frames = align_to_color.process(frameset);
-
 			for (size_t i = 0; i < depth_data.size(); i++) {
-				size_t x = i % fwidth + xoffset;
-				size_t y = i / fwidth;
 
-				if (x >= fwidth) {
+				size_t x = i % color_intrinsics.width;
+				size_t y = i / color_intrinsics.width;
+
+				if (x >= color_intrinsics.width) {
 					continue;
 				}
 
-				size_t newi = y * fwidth + x;
+				size_t newi = y * color_intrinsics.width + x;
 
 				if (depth_data[i] > cutoff) {
 					frame_data[newi * 4 + 3] = 0;
-				} else {
-					// frame_data[i * 4 + 0] = 255;
-					// frame_data[i * 4 + 1] = 255;
-					// frame_data[i * 4 + 2] = 255;
-					// frame_data[i * 4 + 3] = 255;
 				}
 			}
 		}

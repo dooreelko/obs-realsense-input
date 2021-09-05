@@ -43,7 +43,7 @@ static void realsense_source_defaults(obs_data_t *settings)
 	info("defaults");
 	auto hw = CamSource::Instance().Hardware();
 
-	obs_data_set_default_int(settings, S_CUTOFF, 500);
+	obs_data_set_default_int(settings, S_CUTOFF, 30);
 	obs_data_set_default_int(settings, S_OFFSET, 50);
 	obs_data_set_default_string(settings, S_DEVICE, !hw.devices.empty() ? hw.devices.front().c_str() : "");
 	obs_data_set_default_string(settings, S_SENSOR,
@@ -59,8 +59,8 @@ static obs_properties_t *realsense_source_properties(void *unused)
 
 	obs_properties_t *props = obs_properties_create();
 
-	obs_properties_add_int_slider(props, S_CUTOFF, "Depth cutoff", 0, 56535, 10);
-	obs_properties_add_int_slider(props, S_OFFSET, "Horizonral offset", -500, 500, 5);
+	obs_properties_add_int_slider(props, S_CUTOFF, "Depth cutoff", 0, 40000, 1);
+	// obs_properties_add_int_slider(props, S_OFFSET, "Horizonral offset", -500, 500, 5);
 
 	obs_property_t *devices_prop = obs_properties_add_list(props, S_DEVICE, obs_module_text("RS.Device"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
